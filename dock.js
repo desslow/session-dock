@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ozon Sessions Dock
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @description  Переработанный док сессий выдач.
 // @author       desslow
 // @match        https://*.ozon.ru/orders*
@@ -164,8 +164,11 @@
             if (res.ok) {
                 const data = await res.json();
                 const cached = sessionsMap.get(sessionId);
-                if (cached) {
-                    cached.itemsCount = data.postings ? data.postings.length : 0;
+                if (cached && data) {
+                    const readyPostings = Array.isArray(data.postings) 
+                        ? data.postings.filter(p => p.pvzState && p.pvzState.toLowerCase() === 'readytogiveout') 
+                        : [];
+                    cached.itemsCount = readyPostings.length;
                     cached.shelves = data.postingsShelves ? data.postingsShelves.join(', ') : '';
                     renderDock(true);
                 }
@@ -405,24 +408,12 @@
             white-space: nowrap !important;
             transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), color 0.2s ease !important;
         }
-        .apple-close-btn {
-            opacity: 0;
-            color: rgba(235, 235, 245, 0.35);
-            width: 15px;
-            height: 15px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 10px;
-            line-height: 1;
-            transition: all 0.15s ease;
-        }
 
         .apple-session-card:hover .apple-timer {
-            transform: translateX(-18px) !important; /* Таймер элегантно уступает место крестику */
+            transform: translateX(-18px) !important;
             color: rgba(235, 235, 245, 0.45) !important;
         }
+
         .apple-close-btn {
             position: absolute !important;
             right: 0 !important;
