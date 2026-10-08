@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Ozon Sessions Dock
 // @namespace    http://tampermonkey.net/
-// @version      2.4
-// @description  Переработанный док сессий клиентов на выдачу.
+// @version      2.5
+// @description  Переработанный док сессий выдач клиентам.
 // @author       desslow
 // @match        https://*.ozon.ru/orders*
 // @run-at       document-start
@@ -19,6 +19,7 @@
     let lastZeroWatchdogTime = 0;
     let scanBuffer = '';
     let lastKeyTime = Date.now();
+    let isAutoRedirecting = false;
     window._ozonAuthHeaders = null;
 
     function recordSessionVisit(sessionId) {
@@ -29,7 +30,7 @@
     }
 
     function getTargetPreviousSessionId(closedSessionId) {
-        const closedIdStr = String(closedSessionId);
+        const closedIdStr = String(closedSessionId || '');
         const activeRemaining = Array.from(sessionsMap.values()).filter(s => String(s.id) !== closedIdStr);
 
         if (activeRemaining.length === 0) return null;
@@ -42,6 +43,39 @@
         }
 
         return activeRemaining[activeRemaining.length - 1].id;
+    }
+
+    function checkPostCompletionRedirect() {
+        if (isAutoRedirecting) return;
+        const currentPath = window.location.pathname;
+
+        if (currentPath.startsWith('/orders/session')) {
+            const curId = (currentPath.match(/\/orders\/session(?:-new)?\/(\d+)/) || [])[1];
+            if (curId) {
+                sessionStorage.setItem('active_session_tracker', curId);
+                sessionStorage.removeItem('manual_back_navigation');
+                recordSessionVisit(curId);
+            }
+        } else if (currentPath === '/orders') {
+            const lastSessionId = sessionStorage.getItem('active_session_tracker');
+            const manualBack = sessionStorage.getItem('manual_back_navigation');
+
+            if (lastSessionId && !manualBack) {
+                isAutoRedirecting = true;
+                sessionStorage.removeItem('active_session_tracker');
+
+                setTimeout(() => {
+                    sessionsMap.delete(Number(lastSessionId));
+                    sessionsMap.delete(String(lastSessionId));
+
+                    const nextTargetId = getTargetPreviousSessionId(lastSessionId);
+                    if (nextTargetId) {
+                        navigateSpa(`/orders/session-new/${nextTargetId}`);
+                    }
+                    setTimeout(() => { isAutoRedirecting = false; }, 300);
+                }, 100);
+            }
+        }
     }
 
     function getExactSessionTimestamp(sessionId, rawFoundAt) {
@@ -737,9 +771,8 @@
         }
 
         const currentOpenSessionId = (window.location.pathname.match(/\/orders\/session(?:-new)?\/(\d+)/) || [])[1];
-        if (currentOpenSessionId) recordSessionVisit(currentOpenSessionId);
-
         const domClientName = (document.querySelector('._clientName_sq209_35, [class*="_clientName_"]')?.textContent || '').trim().toLowerCase();
+
         const sortedSessions = Array.from(sessionsMap.values()).sort((a, b) => a.foundAt - b.foundAt);
 
         const currentHash = sortedSessions
@@ -856,6 +889,14 @@
         });
     }
 
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('button');
+        if (btn && btn.querySelector('path[d^="M6.293 2.293"]')) {
+            sessionStorage.setItem('manual_back_navigation', 'true');
+            sessionStorage.removeItem('active_session_tracker');
+        }
+    }, true);
+
     window.addEventListener('keydown', function(e) {
         if (!window.location.pathname.startsWith('/orders')) return;
 
@@ -908,6 +949,7 @@
             updateTimersInPlace();
             syncSessionsBackground();
             syncActiveCardInstant();
+            checkPostCompletionRedirect();
         }
     });
 
@@ -915,6 +957,7 @@
     setInterval(() => {
         renderDock();
         syncActiveCardInstant();
+        checkPostCompletionRedirect();
         if (window.location.pathname === '/orders') {
             checkAndProcessPendingScan();
         }
