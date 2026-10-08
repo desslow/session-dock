@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Ozon Sessions Dock
 // @namespace    http://tampermonkey.net/
-// @version      2.3
-// @description  Переработанный док сессий выдач клиентам.
+// @version      2.4
+// @description  Переработанный док сессий клиентов на выдачу.
 // @author       desslow
 // @match        https://*.ozon.ru/orders*
 // @run-at       document-start
@@ -14,11 +14,35 @@
 
     const COLUMN_WIDTH = 205;
     const sessionsMap = new Map();
+    let visitedSessionHistory = [];
     let lastRenderedHash = '';
     let lastZeroWatchdogTime = 0;
     let scanBuffer = '';
     let lastKeyTime = Date.now();
     window._ozonAuthHeaders = null;
+
+    function recordSessionVisit(sessionId) {
+        if (!sessionId) return;
+        const sId = String(sessionId);
+        visitedSessionHistory = visitedSessionHistory.filter(id => id !== sId);
+        visitedSessionHistory.push(sId);
+    }
+
+    function getTargetPreviousSessionId(closedSessionId) {
+        const closedIdStr = String(closedSessionId);
+        const activeRemaining = Array.from(sessionsMap.values()).filter(s => String(s.id) !== closedIdStr);
+
+        if (activeRemaining.length === 0) return null;
+
+        for (let i = visitedSessionHistory.length - 1; i >= 0; i--) {
+            const histId = visitedSessionHistory[i];
+            if (histId !== closedIdStr && activeRemaining.some(s => String(s.id) === histId)) {
+                return histId;
+            }
+        }
+
+        return activeRemaining[activeRemaining.length - 1].id;
+    }
 
     function getExactSessionTimestamp(sessionId, rawFoundAt) {
         const sharedKey = `ozon_found_at_${sessionId}`;
@@ -87,9 +111,19 @@
                 'x-o3-version-name': this._sHeaders['x-o3-version-name'] || ''
             };
         }
+
+        const requestBody = arguments[0];
         this.addEventListener('load', function() {
             try {
-                if (this._sUrl.includes('/api2/giveout/Sessions')) {
+                if (this._sUrl.includes('/api2/giveout/Sessions/close')) {
+                    let closedId = null;
+                    if (typeof requestBody === 'string') {
+                        try { closedId = JSON.parse(requestBody).sessionId; } catch (e) {}
+                    }
+                    if (closedId) handleNativeCloseRedirect(closedId);
+                }
+
+                if (this._sUrl.includes('/api2/giveout/Sessions') && !this._sUrl.includes('/close')) {
                     const data = JSON.parse(this.responseText);
                     updateSessionsData(data);
                 }
@@ -97,6 +131,20 @@
         });
         return origSend.apply(this, arguments);
     };
+
+    function handleNativeCloseRedirect(closedId) {
+        const currentOpenId = (window.location.pathname.match(/\/orders\/session(?:-new)?\/(\d+)/) || [])[1];
+        if (currentOpenId && String(currentOpenId) === String(closedId)) {
+            sessionsMap.delete(Number(closedId));
+            sessionsMap.delete(String(closedId));
+            const prevId = getTargetPreviousSessionId(closedId);
+            if (prevId) {
+                navigateSpa(`/orders/session-new/${prevId}`);
+            } else {
+                navigateSpa('/orders');
+            }
+        }
+    }
 
     async function syncSessionsBackground() {
         if (!window._ozonAuthHeaders) return;
@@ -217,7 +265,12 @@
 
                     const currentOpenSessionId = (window.location.pathname.match(/\/orders\/session(?:-new)?\/(\d+)/) || [])[1];
                     if (currentOpenSessionId && String(currentOpenSessionId) === String(sessionId)) {
-                        navigateSpa('/orders');
+                        const prevId = getTargetPreviousSessionId(sessionId);
+                        if (prevId) {
+                            navigateSpa(`/orders/session-new/${prevId}`);
+                        } else {
+                            navigateSpa('/orders');
+                        }
                     } else {
                         renderDock(true);
                     }
@@ -288,6 +341,8 @@
     function syncActiveCardInstant() {
         const path = window.location.pathname;
         const currentId = (path.match(/\/orders\/session(?:-new)?\/(\d+)/) || [])[1];
+        if (currentId) recordSessionVisit(currentId);
+
         const domClientName = (document.querySelector('._clientName_sq209_35, [class*="_clientName_"]')?.textContent || '').trim().toLowerCase();
 
         document.querySelectorAll('.apple-session-card').forEach(card => {
@@ -682,8 +737,9 @@
         }
 
         const currentOpenSessionId = (window.location.pathname.match(/\/orders\/session(?:-new)?\/(\d+)/) || [])[1];
-        const domClientName = (document.querySelector('._clientName_sq209_35, [class*="_clientName_"]')?.textContent || '').trim().toLowerCase();
+        if (currentOpenSessionId) recordSessionVisit(currentOpenSessionId);
 
+        const domClientName = (document.querySelector('._clientName_sq209_35, [class*="_clientName_"]')?.textContent || '').trim().toLowerCase();
         const sortedSessions = Array.from(sessionsMap.values()).sort((a, b) => a.foundAt - b.foundAt);
 
         const currentHash = sortedSessions
@@ -718,7 +774,6 @@
 
         sortedSessions.forEach((s, idx) => {
             const isMySession = myLogin && s.operator && (s.operator === myLogin || s.operator.includes(myLogin));
-
             const cardNameLower = (s.name || '').trim().toLowerCase();
             const isActiveCurrent = (currentOpenSessionId && String(s.id) === String(currentOpenSessionId)) ||
                                     (domClientName && cardNameLower && (domClientName.includes(cardNameLower) || cardNameLower.includes(domClientName)));
@@ -736,7 +791,7 @@
                 <div class="${cardClasses.join(' ')}" data-session-id="${s.id}" data-found-at="${s.foundAt}">
                     <div class="apple-row-top">
                         <div class="apple-name-group">
-                            <span class="apple-index-pill" title="Alt+${idx + 1}">${idx + 1}</span>
+                            <span class="apple-index-pill" title="Alt+${idx + 1}">⌥${idx + 1}</span>
                             <span class="apple-client-name" title="${s.name}">${s.name}</span>
                         </div>
                         <div class="apple-top-right">
