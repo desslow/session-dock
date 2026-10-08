@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Ozon Sessions Dock
 // @namespace    http://tampermonkey.net/
-// @version      2.2
-// @description  Переработанный док сессий выдач клиенту.
+// @version      2.3
+// @description  Переработанный док сессий выдач клиентам.
 // @author       desslow
 // @match        https://*.ozon.ru/orders*
 // @run-at       document-start
@@ -236,6 +236,7 @@
             const router = app?.config?.globalProperties?.$router;
             if (router) {
                 router.push(url);
+                setTimeout(syncActiveCardInstant, 50);
                 return;
             }
         } catch (e) {}
@@ -244,10 +245,12 @@
             const nApp = window.useNuxtApp ? window.useNuxtApp() : (window.__nuxt_app__ || window.$nuxt);
             if (nApp?.vueApp?.config?.globalProperties?.$router) {
                 nApp.vueApp.config.globalProperties.$router.push(url);
+                setTimeout(syncActiveCardInstant, 50);
                 return;
             }
             if (window.$nuxt?.$router) {
                 window.$nuxt.$router.push(url);
+                setTimeout(syncActiveCardInstant, 50);
                 return;
             }
         } catch (e) {}
@@ -255,6 +258,7 @@
         try {
             window.history.pushState({}, '', url);
             window.dispatchEvent(new PopStateEvent('popstate'));
+            setTimeout(syncActiveCardInstant, 50);
         } catch (e) {}
 
         setTimeout(() => {
@@ -281,6 +285,26 @@
         }
     }
 
+    function syncActiveCardInstant() {
+        const path = window.location.pathname;
+        const currentId = (path.match(/\/orders\/session(?:-new)?\/(\d+)/) || [])[1];
+        const domClientName = (document.querySelector('._clientName_sq209_35, [class*="_clientName_"]')?.textContent || '').trim().toLowerCase();
+
+        document.querySelectorAll('.apple-session-card').forEach(card => {
+            const sId = card.dataset.sessionId;
+            const cardName = (card.querySelector('.apple-client-name')?.textContent || '').trim().toLowerCase();
+
+            let isActive = false;
+            if (currentId && sId && String(currentId) === String(sId)) {
+                isActive = true;
+            } else if (domClientName && cardName && (domClientName.includes(cardName) || cardName.includes(domClientName))) {
+                isActive = true;
+            }
+
+            card.classList.toggle('active-session', isActive);
+        });
+    }
+
     const style = document.createElement('style');
     style.innerHTML = `
         :root {
@@ -296,10 +320,9 @@
             top: var(--header-height, 60px) !important;
             height: calc(100vh - var(--header-height, 60px)) !important;
             width: ${COLUMN_WIDTH}px !important;
-            background: #111a2e !important;
-            border-left: 1px solid #203148 !important;
-            border-right: 1px solid #203148 !important;
-            box-shadow: 4px 0 24px rgba(0, 0, 0, 0.4) !important;
+            background: #203148 !important;
+            border-right: 1px solid #2b4260 !important;
+            box-shadow: 4px 0 14px rgba(0, 0, 0, 0.25) !important;
             display: flex !important;
             flex-direction: column !important;
             gap: 6px !important;
@@ -309,7 +332,7 @@
             overscroll-behavior: contain !important;
             z-index: 7000 !important;
             font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif !important;
-            transition: left 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease !important;
+            transition: left 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease !important;
             transform: translateX(0);
             opacity: 1;
         }
@@ -334,7 +357,7 @@
 
         body.has-apple-column ._content_jbnnr_28 {
             margin-left: ${COLUMN_WIDTH}px !important;
-            transition: margin-left 0.22s ease !important;
+            transition: margin-left 0.2s ease !important;
         }
 
         .apple-col-header {
@@ -346,7 +369,7 @@
             font-weight: 600;
             color: rgba(235, 235, 245, 0.5);
             letter-spacing: 0.2px;
-            border-bottom: 1px solid #203148;
+            border-bottom: 1px solid #2b4260;
             margin-bottom: 2px;
         }
         .apple-col-badge {
@@ -359,7 +382,7 @@
         }
 
         #apple-sessions-column:hover .apple-session-card {
-            opacity: 0.35 !important;
+            opacity: 0.45 !important;
         }
 
         @keyframes cardAppear {
@@ -374,9 +397,9 @@
         }
 
         .apple-session-card {
-            background: rgba(255, 255, 255, 0.02) !important;
-            border: 1px solid rgba(255, 255, 255, 0.05) !important;
-            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.04) !important;
+            background: #172435 !important;
+            border: 1px solid #2b4260 !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.05) !important;
             border-radius: 10px !important;
             padding: 8px 9px !important;
             display: flex !important;
@@ -385,24 +408,25 @@
             cursor: pointer !important;
             user-select: none !important;
             box-sizing: border-box !important;
-            transition: opacity 0.22s ease, background 0.15s ease, border-color 0.15s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), max-height 0.24s ease, margin 0.24s ease, padding 0.24s ease !important;
+            transition: opacity 0.2s ease, background 0.15s ease, border-color 0.15s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), max-height 0.24s ease, margin 0.24s ease, padding 0.24s ease !important;
             position: relative !important;
             flex-shrink: 0 !important;
             animation: cardAppear 0.24s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
-            max-height: 140px;
-            opacity: 0.58;
+            max-height: 160px;
+            overflow: hidden !important;
+            opacity: 0.6;
         }
 
         .apple-session-card.mine {
-            background: rgba(255, 255, 255, 0.06) !important;
-            border-color: rgba(255, 255, 255, 0.1) !important;
+            background: #1b293d !important;
+            border-color: #354f73 !important;
             opacity: 1 !important;
         }
 
         .apple-session-card.active-session {
-            background: rgba(0, 122, 255, 0.15) !important;
+            background: #1c3557 !important;
             border: 1px solid #007aff !important;
-            box-shadow: 0 0 18px rgba(0, 122, 255, 0.35), inset 3px 0 0 0 #007aff, inset 0 1px 0 0 rgba(255, 255, 255, 0.15) !important;
+            box-shadow: 0 0 16px rgba(0, 122, 255, 0.4), inset 3px 0 0 0 #007aff !important;
             opacity: 1 !important;
         }
 
@@ -425,8 +449,8 @@
 
         #apple-sessions-column .apple-session-card:hover {
             opacity: 1 !important;
-            background: rgba(255, 255, 255, 0.1) !important;
-            border-color: rgba(255, 255, 255, 0.2) !important;
+            background: #22344d !important;
+            border-color: rgba(255, 255, 255, 0.22) !important;
         }
 
         .apple-row-top {
@@ -434,24 +458,29 @@
             align-items: center;
             justify-content: space-between;
             gap: 4px;
+            width: 100%;
+            overflow: hidden;
         }
 
         .apple-name-group {
             display: flex;
             align-items: center;
-            gap: 5px;
-            max-width: 120px;
+            gap: 4px;
+            max-width: 110px;
+            overflow: hidden;
+            flex-shrink: 1;
         }
 
         .apple-index-pill {
             font-size: 9px;
             font-weight: 700;
-            color: rgba(235, 235, 245, 0.45);
+            color: rgba(235, 235, 245, 0.5);
             background: rgba(255, 255, 255, 0.08);
-            padding: 1px 4px;
+            padding: 1px 3px;
             border-radius: 4px;
             font-family: monospace;
             flex-shrink: 0;
+            line-height: 1;
         }
 
         .apple-client-name {
@@ -469,6 +498,7 @@
             display: flex !important;
             align-items: center !important;
             justify-content: flex-end !important;
+            flex-shrink: 0;
         }
 
         .apple-timer {
@@ -477,7 +507,7 @@
             color: rgba(235, 235, 245, 0.6) !important;
             font-variant-numeric: tabular-nums !important;
             white-space: nowrap !important;
-            transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), color 0.2s ease !important;
+            transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), color 0.2s ease !important;
         }
 
         .apple-session-card:hover .apple-timer {
@@ -501,7 +531,7 @@
             justify-content: center !important;
             font-size: 9px !important;
             line-height: 1 !important;
-            transition: opacity 0.2s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), background 0.15s, color 0.15s !important;
+            transition: opacity 0.2s ease, transform 0.2s cubic-bezier(0.16, 1, 0.3, 1), background 0.15s, color 0.15s !important;
         }
 
         .apple-session-card:hover .apple-close-btn {
@@ -512,22 +542,34 @@
 
         .apple-close-btn:hover {
             color: #ff453a !important;
-            background: rgba(255, 69, 58, 0.2) !important;
+            background: rgba(255, 69, 58, 0.25) !important;
+        }
+
+        .apple-row-mid {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 4px;
+            width: 100%;
         }
 
         .apple-shelves-wrap {
             display: flex;
             align-items: center;
-            gap: 4px;
+            gap: 3px;
             flex-wrap: wrap;
+            max-width: 135px;
+            overflow: hidden;
         }
+
         .apple-shelf-pill {
             font-size: 10px;
             font-weight: 700;
-            padding: 1px 5px;
-            border-radius: 5px;
+            padding: 1px 4px;
+            border-radius: 4px;
             white-space: nowrap;
             letter-spacing: -0.1px;
+            line-height: 1.1;
         }
         .pill-regular {
             color: #38bdf8;
@@ -540,23 +582,19 @@
             border: 1px solid rgba(245, 158, 11, 0.35);
         }
 
-        .apple-row-mid {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 4px;
-        }
         .apple-items-count {
             font-size: 11px;
             color: rgba(235, 235, 245, 0.5);
             white-space: nowrap;
+            flex-shrink: 0;
         }
 
         .apple-tags-row {
             display: flex;
             align-items: center;
-            gap: 4px;
+            gap: 3px;
             flex-wrap: wrap;
+            width: 100%;
         }
 
         .apple-row-bottom {
@@ -564,20 +602,25 @@
             align-items: center;
             justify-content: space-between;
             margin-top: 1px;
+            width: 100%;
+            gap: 4px;
         }
+
         .apple-tag {
             font-size: 10px;
             font-weight: 600;
-            padding: 1px 5px;
+            padding: 1px 4px;
             border-radius: 4px;
             white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            line-height: 1.2;
         }
-        .tag-unpaid { color: #ff453a; background: rgba(255, 69, 58, 0.12); }
-        .tag-paid { color: #30d158; background: rgba(48, 209, 88, 0.12); }
-        .tag-you { color: #0a84ff; background: rgba(10, 132, 255, 0.14); font-weight: 700; }
-        .tag-colleague { color: rgba(235, 235, 245, 0.45); }
+        .tag-unpaid { color: #ff453a; background: rgba(255, 69, 58, 0.12); flex-shrink: 0; }
+        .tag-paid { color: #30d158; background: rgba(48, 209, 88, 0.12); flex-shrink: 0; }
+        .tag-you { color: #0a84ff; background: rgba(10, 132, 255, 0.14); font-weight: 700; flex-shrink: 0; }
+        .tag-colleague { color: rgba(235, 235, 245, 0.45); max-width: 80px; }
         .tag-spec { color: #f59e0b; background: rgba(245, 158, 11, 0.14); border: 1px solid rgba(245, 158, 11, 0.25); }
-        .tag-active-text { color: #38bdf8; background: rgba(56, 189, 248, 0.15); font-weight: 700; }
     `;
     document.head.appendChild(style);
 
@@ -639,15 +682,17 @@
         }
 
         const currentOpenSessionId = (window.location.pathname.match(/\/orders\/session(?:-new)?\/(\d+)/) || [])[1];
+        const domClientName = (document.querySelector('._clientName_sq209_35, [class*="_clientName_"]')?.textContent || '').trim().toLowerCase();
 
         const sortedSessions = Array.from(sessionsMap.values()).sort((a, b) => a.foundAt - b.foundAt);
 
         const currentHash = sortedSessions
-            .map(s => `${s.id}-${s.shelves}-${s.itemsCount}-${s.id === currentOpenSessionId}-${JSON.stringify(s.flags || {})}`)
+            .map(s => `${s.id}-${s.shelves}-${s.itemsCount}-${String(s.id) === String(currentOpenSessionId)}-${JSON.stringify(s.flags || {})}`)
             .join('|');
 
         if (!force && currentHash === lastRenderedHash) {
             updateTimersInPlace();
+            syncActiveCardInstant();
             return;
         }
         lastRenderedHash = currentHash;
@@ -673,7 +718,10 @@
 
         sortedSessions.forEach((s, idx) => {
             const isMySession = myLogin && s.operator && (s.operator === myLogin || s.operator.includes(myLogin));
-            const isActiveCurrent = currentOpenSessionId && String(s.id) === String(currentOpenSessionId);
+
+            const cardNameLower = (s.name || '').trim().toLowerCase();
+            const isActiveCurrent = (currentOpenSessionId && String(s.id) === String(currentOpenSessionId)) ||
+                                    (domClientName && cardNameLower && (domClientName.includes(cardNameLower) || cardNameLower.includes(domClientName)));
 
             const timeStr = formatTime(s.foundAt);
             const pillsHtml = buildShelfPillsHtml(s.shelves);
@@ -688,7 +736,7 @@
                 <div class="${cardClasses.join(' ')}" data-session-id="${s.id}" data-found-at="${s.foundAt}">
                     <div class="apple-row-top">
                         <div class="apple-name-group">
-                            <span class="apple-index-pill" title="Alt+${idx + 1}">⌥${idx + 1}</span>
+                            <span class="apple-index-pill" title="Alt+${idx + 1}">${idx + 1}</span>
                             <span class="apple-client-name" title="${s.name}">${s.name}</span>
                         </div>
                         <div class="apple-top-right">
@@ -708,12 +756,9 @@
                         <span class="apple-tag ${s.allPrepaid ? 'tag-paid' : 'tag-unpaid'}">
                             ${s.allPrepaid ? '✓ Оплачено' : '● Оплата'}
                         </span>
-                        <div style="display: flex; align-items: center; gap: 4px;">
-                            ${isActiveCurrent ? '<span class="apple-tag tag-active-text">В работе</span>' : ''}
-                            <span class="apple-tag ${isMySession ? 'tag-you' : 'tag-colleague'}">
-                                ${isMySession ? 'Вы' : s.operator || 'Коллега'}
-                            </span>
-                        </div>
+                        <span class="apple-tag ${isMySession ? 'tag-you' : 'tag-colleague'}" title="${s.operator}">
+                            ${isMySession ? 'Вы' : s.operator || 'Коллега'}
+                        </span>
                     </div>
                 </div>
             `;
@@ -735,7 +780,11 @@
             card.onclick = (e) => {
                 if (e.target.closest('.apple-close-btn')) return;
                 const sId = card.dataset.sessionId;
-                if (sId) navigateSpa(`/orders/session-new/${sId}`);
+                if (sId) {
+                    document.querySelectorAll('.apple-session-card').forEach(c => c.classList.remove('active-session'));
+                    card.classList.add('active-session');
+                    navigateSpa(`/orders/session-new/${sId}`);
+                }
             };
         });
     }
@@ -763,7 +812,11 @@
                 if (sortedSessions[requestedIdx]) {
                     e.preventDefault();
                     e.stopPropagation();
-                    navigateSpa(`/orders/session-new/${sortedSessions[requestedIdx].id}`);
+                    const targetId = sortedSessions[requestedIdx].id;
+                    document.querySelectorAll('.apple-session-card').forEach(c => {
+                        c.classList.toggle('active-session', String(c.dataset.sessionId) === String(targetId));
+                    });
+                    navigateSpa(`/orders/session-new/${targetId}`);
                     return;
                 }
             }
@@ -799,14 +852,16 @@
         if (!document.hidden) {
             updateTimersInPlace();
             syncSessionsBackground();
+            syncActiveCardInstant();
         }
     });
 
-    setInterval(syncSessionsBackground, 3000);
+    setInterval(syncSessionsBackground, 2500);
     setInterval(() => {
         renderDock();
+        syncActiveCardInstant();
         if (window.location.pathname === '/orders') {
             checkAndProcessPendingScan();
         }
-    }, 1000);
+    }, 200);
 })();
