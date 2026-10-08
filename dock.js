@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Ozon Sessions Dock
 // @namespace    http://tampermonkey.net/
-// @version      2.1
-// @description  Переработанный док сессий выдач.
+// @version      2.2
+// @description  Переработанный док сессий выдач клиенту.
 // @author       desslow
 // @match        https://*.ozon.ru/orders*
 // @run-at       document-start
@@ -16,6 +16,8 @@
     const sessionsMap = new Map();
     let lastRenderedHash = '';
     let lastZeroWatchdogTime = 0;
+    let scanBuffer = '';
+    let lastKeyTime = Date.now();
     window._ozonAuthHeaders = null;
 
     function getExactSessionTimestamp(sessionId, rawFoundAt) {
@@ -126,12 +128,23 @@
             if (!activeIds.has(k)) {
                 sessionsMap.delete(k);
                 localStorage.removeItem(`ozon_found_at_${k}`);
+                localStorage.removeItem(`ozon_session_timer_${k}`);
             }
         }
 
         data.sessions.forEach(s => {
             const existing = sessionsMap.get(s.sessionId);
             const ts = getExactSessionTimestamp(s.sessionId, s.foundAt);
+
+            const specFlags = {
+                passport: s.hasCheckPassport === true,
+                jewelry: s.hasJewelry === true,
+                atm: s.isAtmPayment === true,
+                bank: s.hasOzonBankProduct === true,
+                global: s.hasGlobal === true,
+                tips: s.tipsEnabled === true,
+                legal: s.hasLegal === true
+            };
 
             if (!existing) {
                 sessionsMap.set(s.sessionId, {
@@ -141,13 +154,15 @@
                     allPrepaid: s.allPrepaid === true,
                     operator: (s.userName || '').replace('PVZ_', ''),
                     shelves: '',
-                    itemsCount: 0
+                    itemsCount: 0,
+                    flags: specFlags
                 });
                 fetchSessionDetails(s.sessionId);
             } else {
                 existing.foundAt = ts;
                 existing.allPrepaid = s.allPrepaid === true;
                 existing.operator = (s.userName || '').replace('PVZ_', '');
+                existing.flags = specFlags;
             }
         });
 
@@ -165,8 +180,8 @@
                 const data = await res.json();
                 const cached = sessionsMap.get(sessionId);
                 if (cached && data) {
-                    const readyPostings = Array.isArray(data.postings) 
-                        ? data.postings.filter(p => p.pvzState && p.pvzState.toLowerCase() === 'readytogiveout') 
+                    const readyPostings = Array.isArray(data.postings)
+                        ? data.postings.filter(p => p.pvzState && p.pvzState.toLowerCase() === 'readytogiveout')
                         : [];
                     cached.itemsCount = readyPostings.length;
                     cached.shelves = data.postingsShelves ? data.postingsShelves.join(', ') : '';
@@ -206,7 +221,7 @@
                     } else {
                         renderDock(true);
                     }
-                }, 260);
+                }, 240);
             } else {
                 if (cardElement) cardElement.classList.remove('closing');
             }
@@ -249,6 +264,23 @@
         }, 120);
     }
 
+    function checkAndProcessPendingScan() {
+        const pendingBarcode = sessionStorage.getItem('pending_client_scan');
+        if (!pendingBarcode) return;
+
+        const input = document.querySelector('[data-testid="searchInput"]');
+        const btn = document.querySelector('[data-testid="searchButton"]');
+
+        if (input && btn) {
+            sessionStorage.removeItem('pending_client_scan');
+            input.value = pendingBarcode;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            setTimeout(() => {
+                btn.click();
+            }, 80);
+        }
+    }
+
     const style = document.createElement('style');
     style.innerHTML = `
         :root {
@@ -264,10 +296,10 @@
             top: var(--header-height, 60px) !important;
             height: calc(100vh - var(--header-height, 60px)) !important;
             width: ${COLUMN_WIDTH}px !important;
-            background: #203148 !important;
-            border-left: 1px solid #293c57 !important;
+            background: #111a2e !important;
+            border-left: 1px solid #203148 !important;
             border-right: 1px solid #203148 !important;
-            box-shadow: 4px 2 2 2px rgba(0, 0, 0, 0.35) !important;
+            box-shadow: 4px 0 24px rgba(0, 0, 0, 0.4) !important;
             display: flex !important;
             flex-direction: column !important;
             gap: 6px !important;
@@ -277,7 +309,15 @@
             overscroll-behavior: contain !important;
             z-index: 7000 !important;
             font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", sans-serif !important;
-            transition: left 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+            transition: left 0.22s cubic-bezier(0.16, 1, 0.3, 1), transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease !important;
+            transform: translateX(0);
+            opacity: 1;
+        }
+
+        #apple-sessions-column.dock-hidden {
+            transform: translateX(-100%) !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
         }
 
         #apple-sessions-column::-webkit-scrollbar {
@@ -291,13 +331,10 @@
             background: rgba(255, 255, 255, 0.16) !important;
             border-radius: 10px !important;
         }
-        #apple-sessions-column::-webkit-scrollbar-thumb:hover {
-            background: rgba(255, 255, 255, 0.32) !important;
-        }
 
         body.has-apple-column ._content_jbnnr_28 {
             margin-left: ${COLUMN_WIDTH}px !important;
-            transition: margin-left 0.2s ease !important;
+            transition: margin-left 0.22s ease !important;
         }
 
         .apple-col-header {
@@ -321,12 +358,14 @@
             font-weight: 600;
         }
 
-        #apple-sessions-column:hover .apple-session-card { opacity: 0.45; }
+        #apple-sessions-column:hover .apple-session-card {
+            opacity: 0.35 !important;
+        }
 
         @keyframes cardAppear {
             0% {
                 opacity: 0;
-                transform: translateY(-6px) scale(0.97);
+                transform: translateY(-8px) scale(0.96);
             }
             100% {
                 opacity: 1;
@@ -335,22 +374,40 @@
         }
 
         .apple-session-card {
-            background: rgba(255, 255, 255, 0.04) !important;
-            border: 1px solid rgba(255, 255, 255, 0.07) !important;
-            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.05) !important;
+            background: rgba(255, 255, 255, 0.02) !important;
+            border: 1px solid rgba(255, 255, 255, 0.05) !important;
+            box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.04) !important;
             border-radius: 10px !important;
-            padding: 8px 10px !important;
+            padding: 8px 9px !important;
             display: flex !important;
             flex-direction: column !important;
-            gap: 5px !important;
+            gap: 4px !important;
             cursor: pointer !important;
             user-select: none !important;
             box-sizing: border-box !important;
-            transition: opacity 0.22s ease, background 0.15s ease, transform 0.25s cubic-bezier(0.16, 1, 0.3, 1), max-height 0.25s ease, margin 0.25s ease, padding 0.25s ease !important;
+            transition: opacity 0.22s ease, background 0.15s ease, border-color 0.15s ease, transform 0.22s cubic-bezier(0.16, 1, 0.3, 1), max-height 0.24s ease, margin 0.24s ease, padding 0.24s ease !important;
             position: relative !important;
             flex-shrink: 0 !important;
-            animation: cardAppear 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
-            max-height: 120px;
+            animation: cardAppear 0.24s cubic-bezier(0.16, 1, 0.3, 1) forwards !important;
+            max-height: 140px;
+            opacity: 0.58;
+        }
+
+        .apple-session-card.mine {
+            background: rgba(255, 255, 255, 0.06) !important;
+            border-color: rgba(255, 255, 255, 0.1) !important;
+            opacity: 1 !important;
+        }
+
+        .apple-session-card.active-session {
+            background: rgba(0, 122, 255, 0.15) !important;
+            border: 1px solid #007aff !important;
+            box-shadow: 0 0 18px rgba(0, 122, 255, 0.35), inset 3px 0 0 0 #007aff, inset 0 1px 0 0 rgba(255, 255, 255, 0.15) !important;
+            opacity: 1 !important;
+        }
+
+        .apple-session-card.active-session .apple-client-name {
+            color: #38bdf8 !important;
         }
 
         .apple-session-card.closing {
@@ -368,14 +425,8 @@
 
         #apple-sessions-column .apple-session-card:hover {
             opacity: 1 !important;
-            background: rgba(255, 255, 255, 0.09) !important;
-            border-color: rgba(255, 255, 255, 0.16) !important;
-        }
-
-        .apple-session-card.active-session {
-            background: rgba(10, 132, 255, 0.12) !important;
-            border-color: rgba(10, 132, 255, 0.4) !important;
-            box-shadow: inset 3px 0 0 0 #0a84ff, inset 0 1px 0 0 rgba(255, 255, 255, 0.1) !important;
+            background: rgba(255, 255, 255, 0.1) !important;
+            border-color: rgba(255, 255, 255, 0.2) !important;
         }
 
         .apple-row-top {
@@ -384,6 +435,25 @@
             justify-content: space-between;
             gap: 4px;
         }
+
+        .apple-name-group {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            max-width: 120px;
+        }
+
+        .apple-index-pill {
+            font-size: 9px;
+            font-weight: 700;
+            color: rgba(235, 235, 245, 0.45);
+            background: rgba(255, 255, 255, 0.08);
+            padding: 1px 4px;
+            border-radius: 4px;
+            font-family: monospace;
+            flex-shrink: 0;
+        }
+
         .apple-client-name {
             font-size: 13px;
             font-weight: 600;
@@ -392,14 +462,15 @@
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
-            max-width: 105px;
         }
+
         .apple-top-right {
             position: relative !important;
             display: flex !important;
             align-items: center !important;
             justify-content: flex-end !important;
         }
+
         .apple-timer {
             font-size: 11px !important;
             font-weight: 500 !important;
@@ -411,7 +482,7 @@
 
         .apple-session-card:hover .apple-timer {
             transform: translateX(-18px) !important;
-            color: rgba(235, 235, 245, 0.45) !important;
+            color: rgba(235, 235, 245, 0.4) !important;
         }
 
         .apple-close-btn {
@@ -441,7 +512,7 @@
 
         .apple-close-btn:hover {
             color: #ff453a !important;
-            background: rgba(255, 69, 58, 0.18) !important;
+            background: rgba(255, 69, 58, 0.2) !important;
         }
 
         .apple-shelves-wrap {
@@ -481,6 +552,13 @@
             white-space: nowrap;
         }
 
+        .apple-tags-row {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex-wrap: wrap;
+        }
+
         .apple-row-bottom {
             display: flex;
             align-items: center;
@@ -492,11 +570,14 @@
             font-weight: 600;
             padding: 1px 5px;
             border-radius: 4px;
+            white-space: nowrap;
         }
         .tag-unpaid { color: #ff453a; background: rgba(255, 69, 58, 0.12); }
         .tag-paid { color: #30d158; background: rgba(48, 209, 88, 0.12); }
         .tag-you { color: #0a84ff; background: rgba(10, 132, 255, 0.14); font-weight: 700; }
         .tag-colleague { color: rgba(235, 235, 245, 0.45); }
+        .tag-spec { color: #f59e0b; background: rgba(245, 158, 11, 0.14); border: 1px solid rgba(245, 158, 11, 0.25); }
+        .tag-active-text { color: #38bdf8; background: rgba(56, 189, 248, 0.15); font-weight: 700; }
     `;
     document.head.appendChild(style);
 
@@ -509,6 +590,19 @@
             const isKgt = shelf.toUpperCase().includes('КГТ');
             return `<span class="apple-shelf-pill ${isKgt ? 'pill-kgt' : 'pill-regular'}">${shelf}</span>`;
         }).join('');
+    }
+
+    function buildSpecialFlagsHtml(flags) {
+        if (!flags) return '';
+        let badges = [];
+        if (flags.passport) badges.push('<span class="apple-tag tag-spec">🪪 Паспорт</span>');
+        if (flags.jewelry) badges.push('<span class="apple-tag tag-spec">💎 Ювелирка</span>');
+        if (flags.tips) badges.push('<span class="apple-tag tag-spec">☕ Чаевые</span>');
+        if (flags.atm) badges.push('<span class="apple-tag tag-spec">🏧 Банкомат</span>');
+        if (flags.bank) badges.push('<span class="apple-tag tag-spec">💳 Ozon Банк</span>');
+        if (flags.global) badges.push('<span class="apple-tag tag-spec">🌐 Global</span>');
+        if (flags.legal) badges.push('<span class="apple-tag tag-spec">🏢 Юрлицо</span>');
+        return badges.join('');
     }
 
     function formatTime(foundAtTs) {
@@ -528,25 +622,28 @@
         attachResizeObserver();
         updateSidebarGeometry();
 
-        if (!window.location.pathname.startsWith('/orders')) {
-            const col = document.getElementById('apple-sessions-column');
-            if (col) col.remove();
-            document.body.classList.remove('has-apple-column');
-            return;
-        }
+        let col = document.getElementById('apple-sessions-column');
 
-        if (sessionsMap.size === 0) {
-            const col = document.getElementById('apple-sessions-column');
-            if (col) col.remove();
-            document.body.classList.remove('has-apple-column');
+        if (!window.location.pathname.startsWith('/orders') || sessionsMap.size === 0) {
+            if (col && !col.classList.contains('dock-hidden')) {
+                col.classList.add('dock-hidden');
+                document.body.classList.remove('has-apple-column');
+                setTimeout(() => {
+                    if (sessionsMap.size === 0 || !window.location.pathname.startsWith('/orders')) {
+                        col.remove();
+                    }
+                }, 260);
+            }
             lastRenderedHash = '';
             return;
         }
 
         const currentOpenSessionId = (window.location.pathname.match(/\/orders\/session(?:-new)?\/(\d+)/) || [])[1];
 
-        const currentHash = Array.from(sessionsMap.values())
-            .map(s => `${s.id}-${s.shelves}-${s.itemsCount}-${s.id === currentOpenSessionId}`)
+        const sortedSessions = Array.from(sessionsMap.values()).sort((a, b) => a.foundAt - b.foundAt);
+
+        const currentHash = sortedSessions
+            .map(s => `${s.id}-${s.shelves}-${s.itemsCount}-${s.id === currentOpenSessionId}-${JSON.stringify(s.flags || {})}`)
             .join('|');
 
         if (!force && currentHash === lastRenderedHash) {
@@ -555,13 +652,13 @@
         }
         lastRenderedHash = currentHash;
 
-        let col = document.getElementById('apple-sessions-column');
         if (!col) {
             col = document.createElement('div');
             col.id = 'apple-sessions-column';
             document.body.appendChild(col);
         }
 
+        col.classList.remove('dock-hidden');
         document.body.classList.add('has-apple-column');
 
         const myLoginEl = document.querySelector('[class*="_rightAvatarMenuLogin_"]');
@@ -570,22 +667,30 @@
         let html = `
             <div class="apple-col-header">
                 <span>Очередь</span>
-                <span class="apple-col-badge">${sessionsMap.size}</span>
+                <span class="apple-col-badge">${sortedSessions.length}</span>
             </div>
         `;
 
-        sessionsMap.forEach(s => {
+        sortedSessions.forEach((s, idx) => {
             const isMySession = myLogin && s.operator && (s.operator === myLogin || s.operator.includes(myLogin));
             const isActiveCurrent = currentOpenSessionId && String(s.id) === String(currentOpenSessionId);
 
             const timeStr = formatTime(s.foundAt);
             const pillsHtml = buildShelfPillsHtml(s.shelves);
             const countInfo = s.itemsCount > 0 ? `${s.itemsCount} шт.` : '';
+            const specBadgesHtml = buildSpecialFlagsHtml(s.flags);
+
+            let cardClasses = ['apple-session-card'];
+            if (isMySession) cardClasses.push('mine');
+            if (isActiveCurrent) cardClasses.push('active-session');
 
             html += `
-                <div class="apple-session-card ${isActiveCurrent ? 'active-session' : ''}" data-session-id="${s.id}" data-found-at="${s.foundAt}">
+                <div class="${cardClasses.join(' ')}" data-session-id="${s.id}" data-found-at="${s.foundAt}">
                     <div class="apple-row-top">
-                        <span class="apple-client-name" title="${s.name}">${s.name}</span>
+                        <div class="apple-name-group">
+                            <span class="apple-index-pill" title="Alt+${idx + 1}">⌥${idx + 1}</span>
+                            <span class="apple-client-name" title="${s.name}">${s.name}</span>
+                        </div>
                         <div class="apple-top-right">
                             <span class="apple-timer" id="timer-${s.id}">${timeStr}</span>
                             <span class="apple-close-btn" data-close-id="${s.id}" title="Закрыть сессию">✕</span>
@@ -597,13 +702,18 @@
                         <span class="apple-items-count">${countInfo}</span>
                     </div>
 
+                    ${specBadgesHtml ? `<div class="apple-tags-row">${specBadgesHtml}</div>` : ''}
+
                     <div class="apple-row-bottom">
                         <span class="apple-tag ${s.allPrepaid ? 'tag-paid' : 'tag-unpaid'}">
                             ${s.allPrepaid ? '✓ Оплачено' : '● Оплата'}
                         </span>
-                        <span class="apple-tag ${isMySession ? 'tag-you' : 'tag-colleague'}">
-                            ${isMySession ? 'Вы' : s.operator || 'Коллега'}
-                        </span>
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            ${isActiveCurrent ? '<span class="apple-tag tag-active-text">В работе</span>' : ''}
+                            <span class="apple-tag ${isMySession ? 'tag-you' : 'tag-colleague'}">
+                                ${isMySession ? 'Вы' : s.operator || 'Коллега'}
+                            </span>
+                        </div>
                     </div>
                 </div>
             `;
@@ -642,6 +752,49 @@
         });
     }
 
+    window.addEventListener('keydown', function(e) {
+        if (!window.location.pathname.startsWith('/orders')) return;
+
+        if (e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey) {
+            const digitMatch = e.code.match(/^(?:Digit|Numpad)([1-9])$/);
+            if (digitMatch) {
+                const requestedIdx = parseInt(digitMatch[1], 10) - 1;
+                const sortedSessions = Array.from(sessionsMap.values()).sort((a, b) => a.foundAt - b.foundAt);
+                if (sortedSessions[requestedIdx]) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    navigateSpa(`/orders/session-new/${sortedSessions[requestedIdx].id}`);
+                    return;
+                }
+            }
+        }
+
+        const now = Date.now();
+        if (now - lastKeyTime > 350) scanBuffer = '';
+        lastKeyTime = now;
+
+        if (e.key === 'Enter') {
+            const barcode = scanBuffer.trim();
+            scanBuffer = '';
+
+            const isClientCode = /^\d{6,12}\*\d{4}$/.test(barcode) || /^\d{10,14}$/.test(barcode);
+            if (isClientCode) {
+                e.preventDefault();
+                e.stopPropagation();
+                sessionStorage.setItem('pending_client_scan', barcode);
+
+                if (window.location.pathname === '/orders') {
+                    checkAndProcessPendingScan();
+                } else {
+                    navigateSpa('/orders');
+                }
+                return;
+            }
+        } else if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+            scanBuffer += e.key;
+        }
+    }, true);
+
     document.addEventListener('visibilitychange', () => {
         if (!document.hidden) {
             updateTimersInPlace();
@@ -650,5 +803,10 @@
     });
 
     setInterval(syncSessionsBackground, 3000);
-    setInterval(() => renderDock(), 1000);
+    setInterval(() => {
+        renderDock();
+        if (window.location.pathname === '/orders') {
+            checkAndProcessPendingScan();
+        }
+    }, 1000);
 })();
