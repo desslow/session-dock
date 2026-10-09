@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Ozon Sessions Dock
 // @namespace    http://tampermonkey.net/
-// @version      2.5
-// @description  Переработанный док сессий выдач клиентам.
+// @version      2.6
+// @description  Переработанный док сессий клиентов.
 // @author       desslow
 // @match        https://*.ozon.ru/orders*
 // @run-at       document-start
@@ -22,6 +22,27 @@
     let isAutoRedirecting = false;
     window._ozonAuthHeaders = null;
 
+    function isAutoSwitchEnabled() {
+        return localStorage.getItem('smart_auto_switch_enabled') !== 'false';
+    }
+
+    function toggleAutoSwitch() {
+        const nextState = !isAutoSwitchEnabled();
+        localStorage.setItem('smart_auto_switch_enabled', String(nextState));
+        renderDock(true);
+    }
+
+    function getMyOperatorLogin() {
+        const myLoginEl = document.querySelector('[class*="_rightAvatarMenuLogin_"]');
+        return myLoginEl ? myLoginEl.textContent.trim().replace('PVZ_', '') : '';
+    }
+
+    function isMySession(s) {
+        if (!s) return false;
+        const myLogin = getMyOperatorLogin();
+        return Boolean(myLogin && s.operator && (s.operator === myLogin || s.operator.includes(myLogin)));
+    }
+
     function recordSessionVisit(sessionId) {
         if (!sessionId) return;
         const sId = String(sessionId);
@@ -30,19 +51,32 @@
     }
 
     function getTargetPreviousSessionId(closedSessionId) {
-        const closedIdStr = String(closedSessionId || '');
-        const activeRemaining = Array.from(sessionsMap.values()).filter(s => String(s.id) !== closedIdStr);
+        if (!isAutoSwitchEnabled()) return null;
 
-        if (activeRemaining.length === 0) return null;
+        const closedIdStr = String(closedSessionId || '');
+
+        const parentId = sessionStorage.getItem('parent_of_' + closedIdStr);
+        sessionStorage.removeItem('parent_of_' + closedIdStr);
+
+        if (parentId && parentId !== closedIdStr) {
+            const parentSession = sessionsMap.get(Number(parentId)) || sessionsMap.get(String(parentId));
+            if (parentSession && isMySession(parentSession)) {
+                return parentId;
+            }
+        }
+
+        const myActiveRemaining = Array.from(sessionsMap.values()).filter(s => String(s.id) !== closedIdStr && isMySession(s));
+
+        if (myActiveRemaining.length === 0) return null;
 
         for (let i = visitedSessionHistory.length - 1; i >= 0; i--) {
             const histId = visitedSessionHistory[i];
-            if (histId !== closedIdStr && activeRemaining.some(s => String(s.id) === histId)) {
+            if (histId !== closedIdStr && myActiveRemaining.some(s => String(s.id) === histId)) {
                 return histId;
             }
         }
 
-        return activeRemaining[activeRemaining.length - 1].id;
+        return myActiveRemaining[myActiveRemaining.length - 1].id;
     }
 
     function checkPostCompletionRedirect() {
@@ -262,8 +296,8 @@
                 const data = await res.json();
                 const cached = sessionsMap.get(sessionId);
                 if (cached && data) {
-                    const readyPostings = Array.isArray(data.postings)
-                        ? data.postings.filter(p => p.pvzState && p.pvzState.toLowerCase() === 'readytogiveout')
+                    const readyPostings = Array.isArray(data.postings) 
+                        ? data.postings.filter(p => p.pvzState && p.pvzState.toLowerCase() === 'readytogiveout') 
                         : [];
                     cached.itemsCount = readyPostings.length;
                     cached.shelves = data.postingsShelves ? data.postingsShelves.join(', ') : '';
@@ -375,7 +409,15 @@
     function syncActiveCardInstant() {
         const path = window.location.pathname;
         const currentId = (path.match(/\/orders\/session(?:-new)?\/(\d+)/) || [])[1];
-        if (currentId) recordSessionVisit(currentId);
+        if (currentId) {
+            recordSessionVisit(currentId);
+
+            const pendingParent = sessionStorage.getItem('pending_parent_session');
+            if (pendingParent && pendingParent !== currentId) {
+                sessionStorage.setItem('parent_of_' + currentId, pendingParent);
+                sessionStorage.removeItem('pending_parent_session');
+            }
+        }
 
         const domClientName = (document.querySelector('._clientName_sq209_35, [class*="_clientName_"]')?.textContent || '').trim().toLowerCase();
 
@@ -461,6 +503,33 @@
             border-bottom: 1px solid #2b4260;
             margin-bottom: 2px;
         }
+
+        .apple-header-right {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .apple-toggle-btn {
+            font-size: 9px;
+            font-weight: 700;
+            padding: 1px 5px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            user-select: none;
+        }
+        .apple-toggle-btn.on {
+            color: #38bdf8;
+            background: rgba(56, 189, 248, 0.15);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+        }
+        .apple-toggle-btn.off {
+            color: rgba(235, 235, 245, 0.4);
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
         .apple-col-badge {
             background: rgba(255, 255, 255, 0.1);
             color: rgba(235, 235, 245, 0.85);
@@ -776,7 +845,7 @@
         const sortedSessions = Array.from(sessionsMap.values()).sort((a, b) => a.foundAt - b.foundAt);
 
         const currentHash = sortedSessions
-            .map(s => `${s.id}-${s.shelves}-${s.itemsCount}-${String(s.id) === String(currentOpenSessionId)}-${JSON.stringify(s.flags || {})}`)
+            .map(s => `${s.id}-${s.shelves}-${s.itemsCount}-${String(s.id) === String(currentOpenSessionId)}-${JSON.stringify(s.flags || {})}-${isAutoSwitchEnabled()}`)
             .join('|');
 
         if (!force && currentHash === lastRenderedHash) {
@@ -795,18 +864,23 @@
         col.classList.remove('dock-hidden');
         document.body.classList.add('has-apple-column');
 
-        const myLoginEl = document.querySelector('[class*="_rightAvatarMenuLogin_"]');
-        const myLogin = myLoginEl ? myLoginEl.textContent.trim().replace('PVZ_', '') : '';
+        const myLogin = getMyOperatorLogin();
+        const autoActive = isAutoSwitchEnabled();
 
         let html = `
             <div class="apple-col-header">
                 <span>Очередь</span>
-                <span class="apple-col-badge">${sortedSessions.length}</span>
+                <div class="apple-header-right">
+                    <span id="auto-switch-toggle" class="apple-toggle-btn ${autoActive ? 'on' : 'off'}" title="Автопереключение после выдачи">
+                        ${autoActive ? '⚡ Авто' : '⏸ Ручной'}
+                    </span>
+                    <span class="apple-col-badge">${sortedSessions.length}</span>
+                </div>
             </div>
         `;
 
         sortedSessions.forEach((s, idx) => {
-            const isMySession = myLogin && s.operator && (s.operator === myLogin || s.operator.includes(myLogin));
+            const isMine = isMySession(s);
             const cardNameLower = (s.name || '').trim().toLowerCase();
             const isActiveCurrent = (currentOpenSessionId && String(s.id) === String(currentOpenSessionId)) ||
                                     (domClientName && cardNameLower && (domClientName.includes(cardNameLower) || cardNameLower.includes(domClientName)));
@@ -817,7 +891,7 @@
             const specBadgesHtml = buildSpecialFlagsHtml(s.flags);
 
             let cardClasses = ['apple-session-card'];
-            if (isMySession) cardClasses.push('mine');
+            if (isMine) cardClasses.push('mine');
             if (isActiveCurrent) cardClasses.push('active-session');
 
             html += `
@@ -844,8 +918,8 @@
                         <span class="apple-tag ${s.allPrepaid ? 'tag-paid' : 'tag-unpaid'}">
                             ${s.allPrepaid ? '✓ Оплачено' : '● Оплата'}
                         </span>
-                        <span class="apple-tag ${isMySession ? 'tag-you' : 'tag-colleague'}" title="${s.operator}">
-                            ${isMySession ? 'Вы' : s.operator || 'Коллега'}
+                        <span class="apple-tag ${isMine ? 'tag-you' : 'tag-colleague'}" title="${s.operator}">
+                            ${isMine ? 'Вы' : s.operator || 'Коллега'}
                         </span>
                     </div>
                 </div>
@@ -853,6 +927,14 @@
         });
 
         col.innerHTML = html;
+
+        const toggleBtn = col.querySelector('#auto-switch-toggle');
+        if (toggleBtn) {
+            toggleBtn.onclick = (e) => {
+                e.stopPropagation();
+                toggleAutoSwitch();
+            };
+        }
 
         col.querySelectorAll('.apple-close-btn').forEach(btn => {
             btn.onclick = (e) => {
@@ -866,7 +948,7 @@
 
         col.querySelectorAll('.apple-session-card').forEach(card => {
             card.onclick = (e) => {
-                if (e.target.closest('.apple-close-btn')) return;
+                if (e.target.closest('.apple-close-btn') || e.target.closest('#auto-switch-toggle')) return;
                 const sId = card.dataset.sessionId;
                 if (sId) {
                     document.querySelectorAll('.apple-session-card').forEach(c => c.classList.remove('active-session'));
@@ -930,6 +1012,12 @@
             if (isClientCode) {
                 e.preventDefault();
                 e.stopPropagation();
+
+                const curSessionId = (window.location.pathname.match(/\/orders\/session(?:-new)?\/(\d+)/) || [])[1];
+                if (curSessionId) {
+                    sessionStorage.setItem('pending_parent_session', curSessionId);
+                }
+
                 sessionStorage.setItem('pending_client_scan', barcode);
 
                 if (window.location.pathname === '/orders') {
